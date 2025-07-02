@@ -1,230 +1,111 @@
+using Unity.Netcode;
 using UnityEngine;
-using UnityEngine.SceneManagement;
 using UnityEngine.Tilemaps;
 
-public class TileChanger : MonoBehaviour
+public class TileChanger : NetworkBehaviour
 {
     [SerializeField] private Tilemap tilemap;
-    [SerializeField] private TileBase[] tiles; // Drag a tile from your Tile Palette here
+    [SerializeField] private TileBase[] tiles; // 0: empty, 1: player1, 2: player2, 3+: highlight tiles
+
+    private NetworkVariable<int> currentPlayer = new NetworkVariable<int>();
     private bool winner = false;
-    private int number = 1;
+
+    public override void OnNetworkSpawn()
+    {
+        if (IsServer)
+        {
+            currentPlayer.Value = 1;
+        }
+    }
 
     void Update()
     {
-        if (!winner)
+        // Only the client owner should interact, and only if game isn't over
+        if (winner || !IsOwner) return;
+
+        if (Input.GetMouseButtonDown(0))
         {
-            if (Input.GetMouseButtonDown(0))
+            var localPlayer = NetworkManager.Singleton.LocalClient?.PlayerObject?.GetComponent<GameTag>();
+            if (localPlayer == null || localPlayer.GetPlayerNumber() != currentPlayer.Value) return;
+
+            Vector3 mouseWorldPos = Camera.main.ScreenToWorldPoint(Input.mousePosition);
+            Vector3Int cellPos = tilemap.WorldToCell(mouseWorldPos);
+            cellPos.z = 0;
+
+            TileBase clickedTile = tilemap.GetTile(cellPos);
+
+            if (tilemap.HasTile(cellPos) && clickedTile == tiles[0])
             {
-                Vector3 mouseWorldPos = Camera.main.ScreenToWorldPoint(Input.mousePosition);
-                Vector3Int cellPos = tilemap.WorldToCell(mouseWorldPos);
-
-                TileBase clickedTile = tilemap.GetTile(cellPos);
-
-
-                if (tilemap.HasTile(cellPos))
-                {
-                    if (clickedTile == tiles[0])
-                    {
-                        tilemap.SetTile(cellPos, tiles[number]);
-                        //Debug.Log($"Changed tile at {cellPos} to new tile.");
-                        clickedTile = tilemap.GetTile(cellPos);
-
-                        winner = DidItWin(number, 5, 8);
-                        if (winner)
-                        {
-                            print($"Player {number} won!");
-                        }
-
-                        if (number == 1) number = 2;
-                        else number = 1;
-                    }
-
-                }
+                ChangeTileServerRpc(cellPos, currentPlayer.Value);
             }
         }
-            
-        /* for (int i = 0; i < 3; i++)
-        {
-            tilemap.SetTile(new Vector3Int(i, 0, 0), tiles[3]);
-        } */
-
     }
 
-    private Vector3Int vec(int n1, int n2, int n3)
+    [ServerRpc(RequireOwnership = false)]
+    private void ChangeTileServerRpc(Vector3Int cellPos, int tileIndex)
     {
-        return new Vector3Int(n1,n2,n3);
+        if (tilemap.GetTile(cellPos) != tiles[0] || winner) return;
+
+        tilemap.SetTile(cellPos, tiles[tileIndex]);
+        UpdateTileClientRpc(cellPos, tileIndex);
+
+        if (DidItWin(tileIndex, 5, 8))
+        {
+            winner = true;
+            Debug.Log($"Player {tileIndex} won!");
+        }
+        else
+        {
+            currentPlayer.Value = tileIndex == 1 ? 2 : 1;
+        }
     }
 
-    private bool DidItWin(int tilepos, int timesToRepeat, int size)
+    [ClientRpc]
+    private void UpdateTileClientRpc(Vector3Int cellPos, int tileIndex)
     {
-        bool leave = false;
-        for (int a = 0; a < size; a++)
+        tilemap.SetTile(cellPos, tiles[tileIndex]);
+    }
+
+    private Vector3Int vec(int x, int y, int z) => new Vector3Int(x, y, z);
+
+    private bool DidItWin(int tileIndex, int toMatch, int boardSize)
+    {
+        for (int x = 0; x < boardSize; x++)
         {
-            for (int b = 0; b < size; b++)
+            for (int y = 0; y < boardSize; y++)
             {
-                Vector3Int pos = vec(a, b, 0);
-                //Left to right
-                for (int i = 0; i < timesToRepeat; i++)
+                Vector3Int origin = vec(x, y, 0);
+                if (CheckDirection(origin, tileIndex, toMatch, vec(1, 0, 0)) ||  // Horizontal
+                    CheckDirection(origin, tileIndex, toMatch, vec(0, 1, 0)) ||  // Vertical
+                    CheckDirection(origin, tileIndex, toMatch, vec(1, 1, 0)) ||  // Diagonal \
+                    CheckDirection(origin, tileIndex, toMatch, vec(-1, 1, 0)))   // Diagonal /
                 {
-                    if (tilemap.GetTile(pos + vec(i, 0, 0)) != tiles[tilepos])
-                    {
-                        leave = true;
-                    }
-                    if (leave)
-                    {
-                        leave = false;
-                        break;
-                    }
-                    if (i + 1 == timesToRepeat)
-                    {
-                        for (int j = 0; j < timesToRepeat; j++)
-                            tilemap.SetTile(pos + vec(j, 0, 0), tiles[tilepos + 2]);
-                        return true;
-                    }
-                }
-
-                //Right to left
-                for (int i = 0; i > -timesToRepeat; i--)
-                {
-                    if (tilemap.GetTile(pos + vec(i, 0, 0)) != tiles[tilepos])
-                    {
-                        leave = true;
-                    }
-                    if (leave)
-                    {
-                        leave = false;
-                        break;
-                    }
-                    if (i - 1 == -timesToRepeat)
-                    {
-                        for (int j = 0; j > -timesToRepeat; j--)
-                            tilemap.SetTile(pos + vec(j, 0, 0), tiles[tilepos + 2]);
-                        return true;
-                    }
-                }
-
-                //Down to up
-                for (int i = 0; i < timesToRepeat; i++)
-                {
-                    if (tilemap.GetTile(pos + vec(0, i, 0)) != tiles[tilepos])
-                    {
-                        leave = true;
-                    }
-                    if (leave)
-                    {
-                        leave = false;
-                        break;
-                    }
-                    if (i + 1 == timesToRepeat)
-                    {
-                        for (int j = 0; j < timesToRepeat; j++)
-                            tilemap.SetTile(pos + vec(0, j, 0), tiles[tilepos + 2]);
-                        return true;
-                    }
-                }
-
-                //Up to Down
-                for (int i = 0; i > -timesToRepeat; i--)
-                {
-                    if (tilemap.GetTile(pos + vec(0, i, 0)) != tiles[tilepos])
-                    {
-                        leave = true;
-                    }
-                    if (leave)
-                    {
-                        leave = false;
-                        break;
-                    }
-                    if (i - 1 == -timesToRepeat)
-                    {
-                        for (int j = 0; j > -timesToRepeat; j--)
-                            tilemap.SetTile(pos + vec(0, j, 0), tiles[tilepos + 2]);
-                        return true;
-                    }
-                }
-
-                //Left down to right up
-                for (int i = 0; i < timesToRepeat; i++)
-                {
-                    if (tilemap.GetTile(pos + vec(i, i, 0)) != tiles[tilepos])
-                    {
-                        leave = true;
-                    }
-                    if (leave)
-                    {
-                        leave = false;
-                        break;
-                    }
-                    if (i + 1 == timesToRepeat)
-                    {
-                        for (int j = 0; j < timesToRepeat; j++)
-                            tilemap.SetTile(pos + vec(j, j, 0), tiles[tilepos + 2]);
-                        return true;
-                    }
-                }
-
-                //Right up to left down
-                for (int i = 0; i > -timesToRepeat; i--)
-                {
-                    if (tilemap.GetTile(pos + vec(i, i, 0)) != tiles[tilepos])
-                    {
-                        leave = true;
-                    }
-                    if (leave)
-                    {
-                        leave = false;
-                        break;
-                    }
-                    if (i - 1 == -timesToRepeat)
-                    {
-                        for (int j = 0; j > -timesToRepeat; j--)
-                            tilemap.SetTile(pos + vec(j, j, 0), tiles[tilepos + 2]);
-                        return true;
-                    }
-                }
-
-                //Right down to left up
-                for (int i = 0; i < timesToRepeat; i++)
-                {
-                    if (tilemap.GetTile(pos + vec(-i, i, 0)) != tiles[tilepos])
-                    {
-                        leave = true;
-                    }
-                    if (leave)
-                    {
-                        leave = false;
-                        break;
-                    }
-                    if (i + 1 == timesToRepeat)
-                    {
-                        for (int j = 0; j < timesToRepeat; j++)
-                            tilemap.SetTile(pos + vec(-j, j, 0), tiles[tilepos + 2]);
-                        return true;
-                    }
-                }
-
-                //Left up to right down
-                for (int i = 0; i > -timesToRepeat; i--)
-                {
-                    if (tilemap.GetTile(pos + vec(i, -i, 0)) != tiles[tilepos])
-                    {
-                        leave = true;
-                    }
-                    if (leave)
-                    {
-                        leave = false;
-                        break;
-                    }
-                    if (i - 1 == -timesToRepeat)
-                    {
-                        for (int j = 0; j > -timesToRepeat; j--)
-                            tilemap.SetTile(pos + vec(j, -j, 0), tiles[tilepos + 2]);
-                        return true;
-                    }
+                    return true;
                 }
             }
         }
 
-            return false;
+        return false;
+    }
+
+    private bool CheckDirection(Vector3Int start, int tileIndex, int count, Vector3Int step)
+    {
+        for (int i = 0; i < count; i++)
+        {
+            Vector3Int checkPos = start + step * i;
+            if (tilemap.GetTile(checkPos) != tiles[tileIndex])
+            {
+                return false;
+            }
+        }
+
+        // Highlight winning tiles
+        for (int i = 0; i < count; i++)
+        {
+            Vector3Int winPos = start + step * i;
+            tilemap.SetTile(winPos, tiles[tileIndex + 2]); // Assumes +2 is highlight version
+        }
+
+        return true;
     }
 }
